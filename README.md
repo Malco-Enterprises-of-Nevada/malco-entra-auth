@@ -25,7 +25,7 @@ enforced by the router:
 npm install malco-entra-auth
 ```
 
-`express` (4.18+ or 5.x) and `@azure/msal-node` (^3.2) are peer dependencies —
+`express` (4.18+ or 5.x) and `@azure/msal-node` (^7) are peer dependencies —
 every fleet app already has both.
 
 ## Usage
