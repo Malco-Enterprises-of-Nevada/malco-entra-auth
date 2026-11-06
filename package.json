@@ -1,6 +1,6 @@
 {
   "name": "malco-entra-auth",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Shared Microsoft Entra ID (Azure AD) OIDC auth router and auth flags for the Budget Las Vegas / Malco app fleet",
   "main": "index.js",
   "exports": {
