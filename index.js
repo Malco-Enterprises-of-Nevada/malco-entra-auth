@@ -99,8 +99,11 @@ function autoSignIn({
   isSignedIn = () => false,
   skipParams = ['signedOut'],
 } = {}) {
-  // basePath '/' would otherwise give '//login', a protocol-relative URL to the host 'login'
-  const loginPath = `${basePath.replace(/\/+$/, '')}/login`;
+  // basePath '/' would otherwise give '//login', a protocol-relative URL to the host 'login'.
+  // A loop, not /\/+$/: that regex is quadratic on a long run of slashes (CodeQL js/polynomial-redos).
+  let base = basePath;
+  while (base.endsWith('/')) base = base.slice(0, -1);
+  const loginPath = `${base}/login`;
   return (req, res, next) => {
     if (req.method !== 'GET' && req.method !== 'HEAD') return next();
     if (!enabled()) return next();
