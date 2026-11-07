@@ -66,7 +66,9 @@ Entra still has the browser session, so the employee lands signed in without
 a prompt. It renders the app's own login page instead when:
 
 - SSO is off (`enabled`, default `ssoEnabled()`), or the request isn't a
-  top-level navigation (fetch, service-worker precache)
+  top-level navigation: a fetch, a service-worker precache, or a page loading
+  in an iframe (`Sec-Fetch-Dest` other than `document`). A framed login page is
+  not forwarded, so it can't set the `entra_auto` loop guard below.
 - `?local` is present: the break-glass form. A 15-minute `entra_local`
   cookie keeps it showing through failed-login redirects to the bare login page.
 - any `skipParams` query param is present (default `['signedOut']`). Point app

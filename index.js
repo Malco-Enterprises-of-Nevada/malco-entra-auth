@@ -76,7 +76,8 @@ const LOCAL_LOGIN_STICKY_MS = 15 * 60 * 1000;
  * `<basePath>/login`. Entra still holds the browser session from whichever fleet app the
  * employee signed in to first, so the hop completes without a prompt and they arrive
  * signed in. Falls through to the app's own login page (next()) when:
- *   - SSO is off, or the request isn't a top-level navigation (fetch, service-worker precache)
+ *   - SSO is off, or the request isn't a top-level navigation (fetch, service-worker precache,
+ *     or a page loading in an iframe: `Sec-Fetch-Dest` other than `document`)
  *   - `isSignedIn(req)` is true (the app's handler already forwards signed-in users)
  *   - `?local` is present (break-glass). Sticks for 15 min via a cookie so a failed local
  *     login that redirects back to the bare login page keeps showing the form.
@@ -98,11 +99,16 @@ function autoSignIn({
   isSignedIn = () => false,
   skipParams = ['signedOut'],
 } = {}) {
+  // basePath '/' would otherwise give '//login', a protocol-relative URL to the host 'login'
+  const loginPath = `${basePath.replace(/\/+$/, '')}/login`;
   return (req, res, next) => {
     if (req.method !== 'GET' && req.method !== 'HEAD') return next();
     if (!enabled()) return next();
     const fetchMode = req.headers && req.headers['sec-fetch-mode'];
     if (fetchMode && fetchMode !== 'navigate') return next();
+    // iframes navigate too; forwarding one would set the loop guard and block the next real visit
+    const fetchDest = req.headers && req.headers['sec-fetch-dest'];
+    if (fetchDest && fetchDest !== 'document') return next();
     if (isSignedIn(req)) return next();
 
     const query = req.query || {};
@@ -121,7 +127,7 @@ function autoSignIn({
       returnTo = '/';
     }
     res.cookie(AUTO_SIGN_IN_COOKIE, '1', { ...cookieOpts, maxAge: AUTO_SIGN_IN_GUARD_MS });
-    return res.redirect(`${basePath}/login?returnTo=${encodeURIComponent(sanitizeReturnTo(returnTo))}`);
+    return res.redirect(`${loginPath}?returnTo=${encodeURIComponent(sanitizeReturnTo(returnTo))}`);
   };
 }
 

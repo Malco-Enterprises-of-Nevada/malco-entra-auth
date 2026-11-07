@@ -133,6 +133,16 @@ describe('autoSignIn (login page forwards straight to Microsoft)', () => {
     expect(res.headers.location).toBe('/auth/microsoft/login?returnTo=%2F');
   });
 
+  test('strips trailing slashes from basePath so a root mount stays on this origin', async () => {
+    for (const [basePath, location] of [
+      ['/', '/login?returnTo=%2F'],
+      ['/auth/microsoft/', '/auth/microsoft/login?returnTo=%2F'],
+    ]) {
+      const res = await request(buildApp({ basePath })).get('/login');
+      expect(res.headers.location).toBe(location);
+    }
+  });
+
   test('renders the login page when SSO is off', async () => {
     const res = await request(buildApp({ enabled: () => false })).get('/login');
     expect(res.status).toBe(200);
@@ -170,6 +180,15 @@ describe('autoSignIn (login page forwards straight to Microsoft)', () => {
     const app = buildApp();
     expect((await request(app).get('/login').set('Sec-Fetch-Mode', 'cors')).status).toBe(200);
     expect((await request(app).get('/login').set('Sec-Fetch-Mode', 'navigate')).status).toBe(302);
+  });
+
+  test('framed navigations render the login page without setting the loop guard', async () => {
+    const app = buildApp();
+    const nav = (dest) => request(app).get('/login').set('Sec-Fetch-Mode', 'navigate').set('Sec-Fetch-Dest', dest);
+    const framed = await nav('iframe');
+    expect(framed.status).toBe(200);
+    expect(setCookies(framed)).toHaveLength(0);
+    expect((await nav('document')).status).toBe(302);
   });
 
   test('defaults `enabled` to the ssoEnabled flag', async () => {
