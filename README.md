@@ -49,6 +49,40 @@ app.use('/auth/microsoft', createEntraAuth({
 Stateless (JWT-cookie) apps pass `stateStore: signedCookieStateStore(secret)`
 instead of relying on `express-session` (see VehicleInspectionPortal).
 
+### Automatic sign-in between fleet apps
+
+Put `autoSignIn()` in front of the app's login page so an employee who is
+already signed in to Microsoft (from the portal or any other fleet app) goes
+straight through instead of clicking "Sign in with Microsoft" again:
+
+```js
+const { autoSignIn } = require('malco-entra-auth');
+
+router.get('/login', autoSignIn({ getReturnTo: () => '/dashboard' }), renderLoginPage);
+```
+
+When SSO is on, it redirects to `<basePath>/login?returnTo=<sanitized path>`.
+Entra still has the browser session, so the employee lands signed in without
+a prompt. It renders the app's own login page instead when:
+
+- SSO is off (`enabled`, default `ssoEnabled()`), or the request isn't a
+  top-level navigation: a fetch, a service-worker precache, or a page loading
+  in an iframe (`Sec-Fetch-Dest` other than `document`). A framed login page is
+  not forwarded, so it can't set the `entra_auto` loop guard below.
+- `?local` is present: the break-glass form. A 15-minute `entra_local`
+  cookie keeps it showing through failed-login redirects to the bare login page.
+- any `skipParams` query param is present (default `['signedOut']`). Point app
+  logouts that land on the login page at `<login>?signedOut=1`, or logging out
+  silently signs the employee back in.
+- this app already auto-redirected in the last 60 s (`entra_auto` cookie). This
+  loop guard stops a denied user, or a session cookie that didn't stick, from
+  bouncing to Microsoft forever.
+
+Options: `basePath` (default `/auth/microsoft`), `enabled`, `getReturnTo(req)`
+(default `req.query.returnTo`), `isSignedIn(req)` (default `false`; when true
+the request goes to the app's handler, which forwards signed-in users),
+`skipParams`.
+
 ### Auth flags
 
 ```js
@@ -60,7 +94,7 @@ flipped off by setting `AUTH_LOCAL_ENABLED=false`.
 
 ## Exports
 
-`createEntraAuth`, `signedCookieStateStore`, `sessionStateStore`,
+`createEntraAuth`, `autoSignIn`, `signedCookieStateStore`, `sessionStateStore`,
 `sanitizeReturnTo`, `domainAllowed`, `SsoDeniedEvent`, `SSO_LOGIN_SUCCESS`
 (and `ssoEnabled` / `localLoginEnabled` from `malco-entra-auth/flags`).
 

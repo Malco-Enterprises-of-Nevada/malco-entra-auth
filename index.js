@@ -19,9 +19,11 @@
  *  10. onUser may throw to deny (e.g. empty roles) -> rendered 403.
  *
  * Stateless apps (no express-session) pass a custom `stateStore` (see signedCookieStateStore).
+ * Apps put `autoSignIn()` on their login page route so employees moving between fleet
+ * apps are signed in automatically instead of seeing a "Sign in with Microsoft" button.
  *
  * Usage:
- *   const { createEntraAuth } = require('../lib/entra-auth');
+ *   const { createEntraAuth } = require('malco-entra-auth');
  *   app.use('/auth/microsoft', createEntraAuth({
  *     tenantId, clientId, clientSecret, redirectUri,
  *     postLogoutRedirectUri, allowedDomains: ['budgetlasvegas.com'],
@@ -32,6 +34,7 @@
 
 const express = require('express');
 const msal = require('@azure/msal-node');
+const { ssoEnabled } = require('./flags');
 
 const MS_LOGIN = 'https://login.microsoftonline.com';
 
@@ -52,7 +55,83 @@ function sanitizeReturnTo(value) {
   if (typeof value !== 'string' || value.length === 0) return '/';
   if (!/^\/(?!\/)/.test(value)) return '/'; // must start with exactly one '/'
   if (value.includes('\\')) return '/';
+  // URL parsers strip tab/CR/LF, so '/\t/evil.com' would resolve as '//evil.com'
+  if (/[\u0000- \u007f]/.test(value)) return '/';
   return value;
+}
+
+function hasCookie(req, name) {
+  const header = req.headers && req.headers.cookie;
+  if (typeof header !== 'string') return false;
+  return header.split(';').some((part) => part.trim().startsWith(`${name}=`));
+}
+
+const AUTO_SIGN_IN_COOKIE = 'entra_auto';
+const LOCAL_LOGIN_COOKIE = 'entra_local';
+const AUTO_SIGN_IN_GUARD_MS = 60 * 1000;
+const LOCAL_LOGIN_STICKY_MS = 15 * 60 * 1000;
+
+/**
+ * Login-page middleware: when SSO is on, skip the app's login page and go straight to
+ * `<basePath>/login`. Entra still holds the browser session from whichever fleet app the
+ * employee signed in to first, so the hop completes without a prompt and they arrive
+ * signed in. Falls through to the app's own login page (next()) when:
+ *   - SSO is off, or the request isn't a top-level navigation (fetch, service-worker precache,
+ *     or a page loading in an iframe: `Sec-Fetch-Dest` other than `document`)
+ *   - `isSignedIn(req)` is true (the app's handler already forwards signed-in users)
+ *   - `?local` is present (break-glass). Sticks for 15 min via a cookie so a failed local
+ *     login that redirects back to the bare login page keeps showing the form.
+ *   - any `skipParams` query param is present (e.g. `?signedOut=1` after an app logout)
+ *   - this app already auto-redirected in the last 60s. Loop guard: a deny page that links
+ *     back to a gated page, or a session cookie that didn't stick, lands on the login page.
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.basePath='/auth/microsoft']  where createEntraAuth is mounted
+ * @param {function} [opts.enabled=ssoEnabled]  must only be true when the router is mounted
+ * @param {function} [opts.getReturnTo]  (req) => path to land on; sanitized. Default: ?returnTo
+ * @param {function} [opts.isSignedIn]  (req) => true when the app already has a session
+ * @param {string[]} [opts.skipParams=['signedOut']]
+ */
+function autoSignIn({
+  basePath = '/auth/microsoft',
+  enabled = ssoEnabled,
+  getReturnTo = (req) => req.query && req.query.returnTo,
+  isSignedIn = () => false,
+  skipParams = ['signedOut'],
+} = {}) {
+  // basePath '/' would otherwise give '//login', a protocol-relative URL to the host 'login'.
+  // A loop, not /\/+$/: that regex is quadratic on a long run of slashes (CodeQL js/polynomial-redos).
+  let base = basePath;
+  while (base.endsWith('/')) base = base.slice(0, -1);
+  const loginPath = `${base}/login`;
+  return (req, res, next) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+    if (!enabled()) return next();
+    const fetchMode = req.headers && req.headers['sec-fetch-mode'];
+    if (fetchMode && fetchMode !== 'navigate') return next();
+    // iframes navigate too; forwarding one would set the loop guard and block the next real visit
+    const fetchDest = req.headers && req.headers['sec-fetch-dest'];
+    if (fetchDest && fetchDest !== 'document') return next();
+    if (isSignedIn(req)) return next();
+
+    const query = req.query || {};
+    const cookieOpts = { httpOnly: true, sameSite: 'lax', secure: Boolean(req.secure), path: '/' };
+    if (query.local !== undefined) {
+      res.cookie(LOCAL_LOGIN_COOKIE, '1', { ...cookieOpts, maxAge: LOCAL_LOGIN_STICKY_MS });
+      return next();
+    }
+    if (skipParams.some((p) => query[p] !== undefined)) return next();
+    if (hasCookie(req, LOCAL_LOGIN_COOKIE) || hasCookie(req, AUTO_SIGN_IN_COOKIE)) return next();
+
+    let returnTo;
+    try {
+      returnTo = getReturnTo(req);
+    } catch {
+      returnTo = '/';
+    }
+    res.cookie(AUTO_SIGN_IN_COOKIE, '1', { ...cookieOpts, maxAge: AUTO_SIGN_IN_GUARD_MS });
+    return res.redirect(`${loginPath}?returnTo=${encodeURIComponent(sanitizeReturnTo(returnTo))}`);
+  };
 }
 
 function domainAllowed(email, allowedDomains) {
@@ -91,7 +170,7 @@ const sessionStateStore = {
  * @param {string} opts.secret  signing secret (distinct from JWT bearer secret)
  * @param {boolean} [opts.secure=true]
  * @param {number} [opts.maxAgeMs=600000]  10 minutes
- * @param {string} [opts.cookieName='__Host-oidc-state']
+ * @param {string} [opts.cookieName='oidc_state']
  */
 function signedCookieStateStore({ secret, secure = true, maxAgeMs = 600000, cookieName = 'oidc_state' }) {
   const crypto = require('crypto');
@@ -336,6 +415,7 @@ function createEntraAuth(opts) {
 
 module.exports = {
   createEntraAuth,
+  autoSignIn,
   sanitizeReturnTo,
   domainAllowed,
   sessionStateStore,
